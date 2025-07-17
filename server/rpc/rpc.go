@@ -85,10 +85,23 @@ func (rpc *Server) GetVersion(ctx context.Context, _ *commonpb.Empty) (*clientpb
 	dirty := version.GitDirty != ""
 	semVer := version.SemanticVersion()
 	compiled, _ := version.Compiled()
+
+	// Ensure we have at least 3 version components to prevent index out of range
+	major, minor, patch := int32(0), int32(0), int32(0)
+	if len(semVer) > 0 {
+		major = int32(semVer[0])
+	}
+	if len(semVer) > 1 {
+		minor = int32(semVer[1])
+	}
+	if len(semVer) > 2 {
+		patch = int32(semVer[2])
+	}
+
 	return &clientpb.Version{
-		Major:      int32(semVer[0]),
-		Minor:      int32(semVer[1]),
-		Patch:      int32(semVer[2]),
+		Major:      major,
+		Minor:      minor,
+		Patch:      patch,
 		Commit:     version.GitCommit,
 		Dirty:      dirty,
 		CompiledAt: compiled.Unix(),

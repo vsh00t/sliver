@@ -3,7 +3,7 @@
 #
 
 GO ?= go
-ARTIFACT_SUFFIX ?= 
+ARTIFACT_SUFFIX ?=
 ENV =
 TAGS ?= -tags go_sqlite
 CGO_ENABLED = 0
@@ -13,7 +13,7 @@ ifneq (,$(findstring cgo_sqlite,$(TAGS)))
 endif
 
 #
-# Prerequisites 
+# Prerequisites
 #
 # https://stackoverflow.com/questions/5618615/check-if-a-program-exists-from-a-makefile
 EXECUTABLES = uname sed git zip date cut $(GO)
@@ -30,7 +30,7 @@ MIN_SUPPORTED_GO_MAJOR_VERSION = 1
 MIN_SUPPORTED_GO_MINOR_VERSION = 21
 GO_VERSION_VALIDATION_ERR_MSG = Golang version is not supported, please update to at least $(MIN_SUPPORTED_GO_MAJOR_VERSION).$(MIN_SUPPORTED_GO_MINOR_VERSION)
 
-VERSION ?= $(shell git describe --abbrev=0)
+VERSION ?= $(shell git describe --tags --abbrev=0)
 COMPILED_AT = $(shell date +%s)
 RELEASES_URL ?= https://api.github.com/repos/BishopFox/sliver/releases
 ARMORY_PUBLIC_KEY ?= RWSBpxpRWDrD7Fe+VvRE3c2VEDC2NK80rlNCj+BX0gz44Xw07r6KQD9L
@@ -154,7 +154,7 @@ clients: clean .downloaded_assets validate-go-version
 	GOOS=freebsd GOARCH=arm64 $(ENV) CGO_ENABLED=0 $(GO) build -mod=vendor -trimpath $(TAGS),client $(LDFLAGS) -o sliver-client_freebsd-arm64$(ARTIFACT_SUFFIX) ./client
 
 .PHONY: servers
-servers: 
+servers:
 	GOOS=windows GOARCH=amd64 $(ENV) CGO_ENABLED=0 $(GO) build -mod=vendor -trimpath $(TAGS),server $(LDFLAGS) -o sliver-server_windows-amd64$(ARTIFACT_SUFFIX).exe ./server
 	GOOS=linux GOARCH=amd64 $(ENV) CGO_ENABLED=0 $(GO) build -mod=vendor -trimpath $(TAGS),server $(LDFLAGS) -o sliver-server_linux-amd64$(ARTIFACT_SUFFIX) ./server
 	GOOS=linux GOARCH=arm64 $(ENV) CGO_ENABLED=0 $(GO) build -mod=vendor -trimpath $(TAGS),server $(LDFLAGS) -o sliver-server_linux-arm64$(ARTIFACT_SUFFIX) ./server
@@ -167,7 +167,7 @@ pb:
 	protoc -I protobuf/ protobuf/sliverpb/sliver.proto --go_out=paths=source_relative:protobuf/
 	protoc -I protobuf/ protobuf/clientpb/client.proto --go_out=paths=source_relative:protobuf/
 	protoc -I protobuf/ protobuf/dnspb/dns.proto --go_out=paths=source_relative:protobuf/
-	protoc -I protobuf/ protobuf/rpcpb/services.proto --go_out=paths=source_relative:protobuf/ --go-grpc_out=protobuf/ --go-grpc_opt=paths=source_relative 
+	protoc -I protobuf/ protobuf/rpcpb/services.proto --go_out=paths=source_relative:protobuf/ --go-grpc_out=protobuf/ --go-grpc_opt=paths=source_relative
 
 .PHONY: debug
 debug: clean

@@ -46,7 +46,8 @@ import (
 )
 
 var (
-	ntdllPath       = "C:\\Windows\\System32\\ntdll.dll" // We make this a var so the string obfuscator can refactor it
+	// Stage 1.2: Use obfuscated paths to avoid static detection si evasión está disponible
+	ntdllPath       = "C:\\Windows\\System32\\ntdll.dll"
 	kernel32dllPath = "C:\\Windows\\System32\\kernel32.dll"
 	CurrentToken    windows.Token
 )

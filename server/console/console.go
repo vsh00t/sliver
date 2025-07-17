@@ -35,6 +35,7 @@ import (
 	"github.com/bishopfox/sliver/protobuf/rpcpb"
 	"github.com/bishopfox/sliver/server/transport"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 // Start - Starts the server console
@@ -46,7 +47,7 @@ func Start() {
 
 	options := []grpc.DialOption{
 		ctxDialer,
-		grpc.WithInsecure(), // This is an in-memory listener, no need for secure transport
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(clienttransport.ClientMaxReceiveMessageSize)),
 	}
 	conn, err := grpc.DialContext(context.Background(), "bufnet", options...)
@@ -57,9 +58,11 @@ func Start() {
 	defer conn.Close()
 	localRPC := rpcpb.NewSliverRPCClient(conn)
 	con := console.NewConsole(false)
-	console.StartClient(con, localRPC, command.ServerCommands(con, serverOnlyCmds), command.SliverCommands(con), true)
-
-	con.App.Start()
+	err = console.StartClient(con, localRPC, command.ServerCommands(con, serverOnlyCmds), command.SliverCommands(con), true)
+	if err != nil {
+		fmt.Printf(Warn+"Failed to start console client: %s\n", err)
+		return
+	}
 }
 
 // serverOnlyCmds - Server only commands

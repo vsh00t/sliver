@@ -120,6 +120,14 @@ func saveAssetVersion(appDir string) {
 func Setup(force bool, echo bool) {
 	appDir := GetRootAppDir()
 	localVer := assetVersion()
+
+	// DEBUG: Skip asset setup to debug console issue
+	if !force && localVer != "" {
+		setupLog.Infof("Skipping asset setup - version exists: %v", localVer)
+		setupLog.Infof("Initialized english encoder with %d words", len(English()))
+		return
+	}
+
 	if force || localVer == "" || localVer != ver.GitCommit {
 		setupLog.Infof("Version mismatch %v != %v", localVer, ver.GitCommit)
 		if echo {

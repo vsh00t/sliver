@@ -76,6 +76,11 @@ func init() {
 	// command completion/filtering purposes.
 	rootCmd.AddCommand(implantCmd(con))
 
+	// Command.
+	// The command allows users to run server commands from their
+	// system shell without entering the interactive console.
+	rootCmd.AddCommand(commandCmd(con))
+
 	// No subcommand invoked means starting the console.
 	rootCmd.RunE, rootCmd.PostRunE = consoleRunnerCmd(con, true)
 

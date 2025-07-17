@@ -191,6 +191,12 @@ message ImplantConfig {
   string Extension = 154;
 
   repeated commonpb.File Assets = 200;
+
+  // Evasion - Digital signature spoofing
+  string SignWith = 201; // Path to executable from which to extract signature
+
+  // Fat implant generation for AV evasion
+  bool FatImplant = 202; // Generate fat implant with entropy padding
 }
 
 message TrafficEncoder {
@@ -237,9 +243,9 @@ message ExternalImplantBinary {
 }
 
 // Configs of previously built implants
-message ImplantBuilds { 
-  map<string, ImplantConfig> Configs = 1; 
-  map<string, ResourceID> ResourceIDs = 2; 
+message ImplantBuilds {
+  map<string, ImplantConfig> Configs = 1;
+  map<string, ResourceID> ResourceIDs = 2;
   map<string, bool> staged = 3;
 }
 
@@ -385,7 +391,7 @@ message DNSListenerReq {
   bool Canaries = 2;
   string Host = 3;
   uint32 Port = 4;
-  bool EnforceOTP = 6; 
+  bool EnforceOTP = 6;
 }
 
 message HTTPListenerReq {
@@ -442,8 +448,8 @@ message RenameReq {
   string Name = 3;
 }
 
-message GenerateReq { 
-  ImplantConfig Config = 1; 
+message GenerateReq {
+  ImplantConfig Config = 1;
   string Name = 2;
 }
 
@@ -1276,7 +1282,7 @@ message CrackFileChunk {
   bytes Data = 9;
 }
 
-// watchtower 
+// watchtower
 message MonitoringProviders {
   repeated MonitoringProvider providers = 1;
 }
@@ -1314,5 +1320,5 @@ message CertificateData {
 }
 
 message CertificateInfo {
-  repeated CertificateData info = 1;  
+  repeated CertificateData info = 1;
 }

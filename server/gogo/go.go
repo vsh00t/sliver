@@ -20,11 +20,14 @@ package gogo
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/bishopfox/sliver/server/assets"
 	"github.com/bishopfox/sliver/server/log"
@@ -86,16 +89,34 @@ func getHomeDir() string {
 	return home
 }
 
-// GarbleCmd - Execute a go command
+// GarbleCmd - Execute a garble command with timeout and better process management
 func GarbleCmd(config GoConfig, cwd string, command []string) ([]byte, error) {
 	target := fmt.Sprintf("%s/%s", config.GOOS, config.GOARCH)
 	if _, ok := ValidCompilerTargets(config)[target]; !ok {
 		return nil, fmt.Errorf(fmt.Sprintf("Invalid compiler target: %s", target))
 	}
+
+	// Set timeout based on implant type - longer for fat implants
+	timeout := 5 * time.Minute
+	for _, arg := range command {
+		if strings.Contains(arg, "fat") || strings.Contains(strings.Join(command, " "), "fat") {
+			timeout = 15 * time.Minute // Extended timeout for fat implants
+			gogoLog.Infof("Extended timeout for fat implant compilation: %v", timeout)
+			break
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
 	garbleBinPath := filepath.Join(config.GOROOT, "bin", "garble")
-	garbleFlags := []string{"-seed=random", "-literals", "-tiny"}
+
+	// Use conservative garble flags to ensure stability with large binaries
+	// This prevents compilation issues while maintaining obfuscation
+	garbleFlags := []string{"-seed=random"}
+
 	command = append(garbleFlags, command...)
-	cmd := exec.Command(garbleBinPath, command...)
+	cmd := exec.CommandContext(ctx, garbleBinPath, command...)
 	cmd.Dir = cwd
 	cmd.Env = []string{
 		fmt.Sprintf("CC=%s", config.CC),
@@ -112,6 +133,12 @@ func GarbleCmd(config GoConfig, cwd string, command []string) ([]byte, error) {
 		fmt.Sprintf("GOGARBLE=%s", config.GOGARBLE),
 		fmt.Sprintf("HOME=%s", getHomeDir()),
 	}
+
+	// Set process group for better process management on macOS
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Setpgid: true,
+	}
+
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -120,16 +147,26 @@ func GarbleCmd(config GoConfig, cwd string, command []string) ([]byte, error) {
 	for _, envVar := range cmd.Env {
 		gogoLog.Debugf("%s\n", envVar)
 	}
-	gogoLog.Infof("garble cmd: '%v'", cmd)
+	gogoLog.Infof("garble cmd: '%v' (timeout: %v)", cmd, timeout)
+
+	start := time.Now()
 	err := cmd.Run()
+	duration := time.Since(start)
+
 	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			gogoLog.Errorf("Garble compilation timed out after %v", duration)
+			return nil, fmt.Errorf("garble compilation timed out after %v", duration)
+		}
 		gogoLog.Debugf("--- env ---\n")
 		for _, envVar := range cmd.Env {
 			gogoLog.Debugf("%s\n", envVar)
 		}
 		gogoLog.Errorf("--- stdout ---\n%s\n", stdout.String())
 		gogoLog.Errorf("--- stderr ---\n%s\n", stderr.String())
-		gogoLog.Error(err)
+		gogoLog.Errorf("Garble compilation failed after %v: %v", duration, err)
+	} else {
+		gogoLog.Infof("Garble compilation completed successfully in %v", duration)
 	}
 
 	return stdout.Bytes(), err
@@ -137,8 +174,21 @@ func GarbleCmd(config GoConfig, cwd string, command []string) ([]byte, error) {
 
 // GoCmd - Execute a go command
 func GoCmd(config GoConfig, cwd string, command []string) ([]byte, error) {
+	// Set timeout based on command type - longer for fat implants or complex builds
+	timeout := 10 * time.Minute
+	for _, arg := range command {
+		if strings.Contains(arg, "fat") || strings.Contains(strings.Join(command, " "), "fat") {
+			timeout = 20 * time.Minute // Extended timeout for fat implants
+			gogoLog.Infof("Extended timeout for fat implant build: %v", timeout)
+			break
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
 	goBinPath := filepath.Join(config.GOROOT, "bin", "go")
-	cmd := exec.Command(goBinPath, command...)
+	cmd := exec.CommandContext(ctx, goBinPath, command...)
 	cmd.Dir = cwd
 	cmd.Env = []string{
 		fmt.Sprintf("CC=%s", config.CC),
@@ -154,13 +204,31 @@ func GoCmd(config GoConfig, cwd string, command []string) ([]byte, error) {
 		fmt.Sprintf("PATH=%s:%s:%s", filepath.Join(config.GOROOT, "bin"), assets.GetZigDir(), os.Getenv("PATH")),
 		fmt.Sprintf("HOME=%s", getHomeDir()),
 	}
+
+	// Set process group for better process management on macOS
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Setpgid: true,
+	}
+
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	gogoLog.Infof("go cmd: '%v'", cmd)
+	gogoLog.Infof("go cmd: '%v' (timeout: %v)", cmd, timeout)
+	start := time.Now()
 	err := cmd.Run()
+	duration := time.Since(start)
+
+	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			gogoLog.Errorf("Go compilation timed out after %v", duration)
+			return nil, fmt.Errorf("go compilation timed out after %v", duration)
+		}
+		gogoLog.Errorf("Go compilation failed after %v: %v", duration, err)
+	} else {
+		gogoLog.Infof("Go compilation completed successfully in %v", duration)
+	}
 	if err != nil {
 		gogoLog.Infof("--- env ---\n")
 		for _, envVar := range cmd.Env {

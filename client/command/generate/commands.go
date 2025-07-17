@@ -28,7 +28,7 @@ func Commands(con *console.SliverClient) []*cobra.Command {
 
 	// Session flags and completions.
 	coreImplantFlags("session", generateCmd)
-	compileImplantFlags("session", generateCmd)
+	compileImplantFlags("generate-session", generateCmd)
 	coreImplantFlagCompletions(generateCmd, con)
 
 	generateBeaconCmd := &cobra.Command{
@@ -42,7 +42,7 @@ func Commands(con *console.SliverClient) []*cobra.Command {
 
 	// Beacon flags and completions.
 	coreImplantFlags("beacon", generateBeaconCmd)
-	compileImplantFlags("beacon", generateBeaconCmd)
+	compileImplantFlags("generate-beacon", generateBeaconCmd)
 	coreBeaconFlags("beacon", generateBeaconCmd)
 	coreImplantFlagCompletions(generateBeaconCmd, con)
 
@@ -186,7 +186,7 @@ func Commands(con *console.SliverClient) []*cobra.Command {
 
 	// Session flags and completions.
 	coreImplantFlags("session", profilesNewCmd)
-	compileImplantFlags("session", profilesNewCmd)
+	compileImplantFlags("profiles-session", profilesNewCmd)
 	coreImplantFlagCompletions(profilesNewCmd, con)
 
 	profilesNewBeaconCmd := &cobra.Command{
@@ -201,7 +201,7 @@ func Commands(con *console.SliverClient) []*cobra.Command {
 
 	// Beacon flags and completions.
 	coreImplantFlags("beacon", profilesNewBeaconCmd)
-	compileImplantFlags("beacon", profilesNewBeaconCmd)
+	compileImplantFlags("profiles-beacon", profilesNewBeaconCmd)
 	coreBeaconFlags("beacon", profilesNewBeaconCmd)
 	coreImplantFlagCompletions(profilesNewBeaconCmd, con)
 
@@ -309,8 +309,11 @@ func coreImplantFlags(name string, cmd *cobra.Command) {
 		f.BoolP("evasion", "e", false, "enable evasion features (e.g. overwrite user space hooks)")
 		f.BoolP("skip-symbols", "l", false, "skip symbol obfuscation")
 		f.BoolP("disable-sgn", "G", false, "disable shikata ga nai shellcode encoder")
-		f.StringP("exports", "v", "StartW,VoidFunc,DllInstall,DllRegisterServer,DllUnregisterServer", "comma separated list of exports to include in the binary")
 		f.StringP("canary", "c", "", "canary domain(s)")
+		f.StringP("exports", "v", "StartW,VoidFunc,DllInstall,DllRegisterServer,DllUnregisterServer", "comma separated list of exports to include in the binary")
+
+		// Evasion - Signature spoofing
+		f.StringP("sign-with", "S", "", "path to executable from which to extract digital signature for evasion")
 
 		// C2 channels
 		f.StringP("mtls", "m", "", "mtls connection strings")
@@ -338,7 +341,7 @@ func coreImplantFlags(name string, cmd *cobra.Command) {
 		f.BoolP("limit-domainjoined", "x", false, "limit execution to domain joined machines")
 		f.StringP("limit-username", "y", "", "limit execution to specified username")
 		f.StringP("limit-hostname", "z", "", "limit execution to specified hostname")
-		f.StringP("limit-fileexists", "F", "", "limit execution to hosts with this file in the filesystem")
+		f.StringP("limit-fileexists", "Q", "", "limit execution to hosts with this file in the filesystem")
 		f.StringP("limit-locale", "L", "", "limit execution to hosts that match this locale")
 
 		f.StringP("format", "f", "exe", "Specifies the output formats, valid values are: 'exe', 'shared' (for dynamic libraries), 'service' (see: `psexec` for more info) and 'shellcode' (windows only)")
@@ -365,7 +368,7 @@ func coreBeaconFlags(name string, cmd *cobra.Command) {
 		f.Int64P("days", "D", 0, "beacon interval days")
 		f.Int64P("hours", "H", 0, "beacon interval hours")
 		f.Int64P("minutes", "M", 0, "beacon interval minutes")
-		f.Int64P("seconds", "S", 60, "beacon interval seconds")
+		f.Int64P("seconds", "u", 60, "beacon interval seconds")
 		f.Int64P("jitter", "J", 30, "beacon interval jitter in seconds")
 	})
 }
@@ -377,5 +380,6 @@ func compileImplantFlags(name string, cmd *cobra.Command) {
 		f.StringP("template", "I", "sliver", "implant code template")
 		f.BoolP("external-builder", "E", false, "use an external builder")
 		f.StringP("save", "s", "", "directory/file to the binary to")
+		f.Bool("fat", false, "generate fat implant with 70MB entropy padding for AV evasion")
 	})
 }
