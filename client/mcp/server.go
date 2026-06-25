@@ -63,13 +63,29 @@ type SliverMCPServer struct {
 	Rpc    rpcpb.SliverRPCClient
 	server *mcpserver.MCPServer
 	logger *log.Logger
+	safety *SafetyMiddleware
 }
 
 func newServer(cfg Config, rpc rpcpb.SliverRPCClient, logger *log.Logger) *SliverMCPServer {
+	// Create safety middleware first so hooks can reference it
+	safety := NewSafetyMiddleware(nil)
+
+	// Create hooks for audit logging of all tool calls
+	hooks := &mcpserver.Hooks{}
+	hooks.AddAfterCallTool(func(ctx context.Context, id any, message *mcpapi.CallToolRequest, result any) {
+		if message == nil {
+			return
+		}
+		toolName := message.Params.Name
+		isDestructive := destructiveTools[toolName]
+		safety.recordAuditSimple(toolName, message, result, isDestructive)
+	})
+
 	base := mcpserver.NewMCPServer(
 		cfg.ServerName,
 		cfg.ServerVersion,
 		mcpserver.WithToolCapabilities(false),
+		mcpserver.WithHooks(hooks),
 	)
 
 	listSessionsAndBeaconsTool := mcpapi.NewTool(
@@ -168,6 +184,247 @@ func newServer(cfg Config, rpc rpcpb.SliverRPCClient, logger *log.Logger) *Slive
 	srv.server.AddTool(mkdirTool, srv.mkdirHandler)
 	srv.server.AddTool(chmodTool, srv.chmodHandler)
 	srv.server.AddTool(chownTool, srv.chownHandler)
+
+	// Process & execution tools
+	psTool := mcpapi.NewTool(
+		psToolName,
+		mcpapi.WithDescription("List running processes on a remote session or beacon."),
+		mcpapi.WithInputSchema[psArgs](),
+		mcpapi.WithReadOnlyHintAnnotation(true),
+		mcpapi.WithIdempotentHintAnnotation(true),
+	)
+	terminateTool := mcpapi.NewTool(
+		terminateToolName,
+		mcpapi.WithDescription("Terminate a process by PID on the remote target."),
+		mcpapi.WithInputSchema[terminateArgs](),
+		mcpapi.WithDestructiveHintAnnotation(true),
+	)
+	executeTool := mcpapi.NewTool(
+		executeToolName,
+		mcpapi.WithDescription("Execute a command on a remote session or beacon. Returns stdout/stderr if output=true."),
+		mcpapi.WithInputSchema[executeArgs](),
+	)
+	uploadTool := mcpapi.NewTool(
+		uploadToolName,
+		mcpapi.WithDescription("Upload a file (base64-encoded) to a remote session or beacon."),
+		mcpapi.WithInputSchema[uploadArgs](),
+	)
+
+	// Network tools
+	ifconfigTool := mcpapi.NewTool(
+		ifconfigToolName,
+		mcpapi.WithDescription("List network interfaces on a remote session or beacon."),
+		mcpapi.WithInputSchema[ifconfigArgs](),
+		mcpapi.WithReadOnlyHintAnnotation(true),
+		mcpapi.WithIdempotentHintAnnotation(true),
+	)
+	netstatTool := mcpapi.NewTool(
+		netstatToolName,
+		mcpapi.WithDescription("List active network connections (TCP/UDP) on a remote session or beacon."),
+		mcpapi.WithInputSchema[netstatArgs](),
+		mcpapi.WithReadOnlyHintAnnotation(true),
+		mcpapi.WithIdempotentHintAnnotation(true),
+	)
+
+	// Recon tools
+	screenshotTool := mcpapi.NewTool(
+		screenshotToolName,
+		mcpapi.WithDescription("Capture a screenshot from a remote session or beacon. Returns base64-encoded PNG."),
+		mcpapi.WithInputSchema[screenshotArgs](),
+		mcpapi.WithReadOnlyHintAnnotation(true),
+	)
+	envTool := mcpapi.NewTool(
+		envToolName,
+		mcpapi.WithDescription("List environment variables on a remote session or beacon."),
+		mcpapi.WithInputSchema[envArgs](),
+		mcpapi.WithReadOnlyHintAnnotation(true),
+		mcpapi.WithIdempotentHintAnnotation(true),
+	)
+	pingTool := mcpapi.NewTool(
+		pingToolName,
+		mcpapi.WithDescription("Ping a remote session or beacon to check connectivity."),
+		mcpapi.WithInputSchema[pingArgs](),
+		mcpapi.WithReadOnlyHintAnnotation(true),
+		mcpapi.WithIdempotentHintAnnotation(true),
+	)
+
+	// Privilege tools
+	privsTool := mcpapi.NewTool(
+		privsToolName,
+		mcpapi.WithDescription("List Windows privileges of the current process on a remote session or beacon."),
+		mcpapi.WithInputSchema[privsArgs](),
+		mcpapi.WithReadOnlyHintAnnotation(true),
+		mcpapi.WithIdempotentHintAnnotation(true),
+	)
+	impersonateTool := mcpapi.NewTool(
+		impersonateToolName,
+		mcpapi.WithDescription("Impersonate a user token on a remote Windows session or beacon (requires SeAssignPrimaryToken/SeImpersonate)."),
+		mcpapi.WithInputSchema[impersonateArgs](),
+	)
+	revToSelfTool := mcpapi.NewTool(
+		revToSelfToolName,
+		mcpapi.WithDescription("Revert to the original token after impersonation on a remote session or beacon."),
+		mcpapi.WithInputSchema[revToSelfArgs](),
+	)
+
+	srv.server.AddTool(psTool, srv.psHandler)
+	srv.server.AddTool(terminateTool, srv.terminateHandler)
+	srv.server.AddTool(executeTool, srv.executeHandler)
+	srv.server.AddTool(uploadTool, srv.uploadHandler)
+	srv.server.AddTool(ifconfigTool, srv.ifconfigHandler)
+	srv.server.AddTool(netstatTool, srv.netstatHandler)
+	srv.server.AddTool(screenshotTool, srv.screenshotHandler)
+	srv.server.AddTool(envTool, srv.envHandler)
+	srv.server.AddTool(pingTool, srv.pingHandler)
+	srv.server.AddTool(privsTool, srv.privsHandler)
+	srv.server.AddTool(impersonateTool, srv.impersonateHandler)
+	srv.server.AddTool(revToSelfTool, srv.revToSelfHandler)
+
+	// Injection & advanced execution tools
+	downloadTool := mcpapi.NewTool(
+		downloadToolName,
+		mcpapi.WithDescription("Download a file from a remote session or beacon. Returns base64-encoded file data."),
+		mcpapi.WithInputSchema[downloadArgs](),
+		mcpapi.WithReadOnlyHintAnnotation(true),
+	)
+	injectShellcodeTool := mcpapi.NewTool(
+		injectShellcodeName,
+		mcpapi.WithDescription("Inject shellcode into a remote process (or self if pid=0) on a session or beacon."),
+		mcpapi.WithInputSchema[injectShellcodeArgs](),
+		mcpapi.WithDestructiveHintAnnotation(true),
+	)
+	sideloadTool := mcpapi.NewTool(
+		sideloadToolName,
+		mcpapi.WithDescription("Sideload a DLL into a sacrificial process on a remote Windows session or beacon."),
+		mcpapi.WithInputSchema[sideloadArgs](),
+	)
+	executeAssemblyTool := mcpapi.NewTool(
+		executeAssemblyName,
+		mcpapi.WithDescription("Execute a .NET assembly in-memory on a remote Windows session or beacon. Supports AMSI/ETW bypass."),
+		mcpapi.WithInputSchema[executeAssemblyArgs](),
+	)
+
+	// Registry tools (Windows)
+	regReadTool := mcpapi.NewTool(
+		regReadToolName,
+		mcpapi.WithDescription("Read a Windows registry value on a remote session or beacon."),
+		mcpapi.WithInputSchema[regReadArgs](),
+		mcpapi.WithReadOnlyHintAnnotation(true),
+		mcpapi.WithIdempotentHintAnnotation(true),
+	)
+	regWriteTool := mcpapi.NewTool(
+		regWriteToolName,
+		mcpapi.WithDescription("Write a Windows registry value on a remote session or beacon."),
+		mcpapi.WithInputSchema[regWriteArgs](),
+	)
+	regCreateKeyTool := mcpapi.NewTool(
+		regCreateKeyToolName,
+		mcpapi.WithDescription("Create a Windows registry key on a remote session or beacon."),
+		mcpapi.WithInputSchema[regCreateKeyArgs](),
+	)
+	regDeleteKeyTool := mcpapi.NewTool(
+		regDeleteKeyToolName,
+		mcpapi.WithDescription("Delete a Windows registry key on a remote session or beacon."),
+		mcpapi.WithInputSchema[regDeleteKeyArgs](),
+		mcpapi.WithDestructiveHintAnnotation(true),
+	)
+	regListSubKeysTool := mcpapi.NewTool(
+		regListSubKeysToolName,
+		mcpapi.WithDescription("List sub-keys of a Windows registry path on a remote session or beacon."),
+		mcpapi.WithInputSchema[regListSubKeysArgs](),
+		mcpapi.WithReadOnlyHintAnnotation(true),
+		mcpapi.WithIdempotentHintAnnotation(true),
+	)
+	regListValuesTool := mcpapi.NewTool(
+		regListValuesToolName,
+		mcpapi.WithDescription("List values under a Windows registry key on a remote session or beacon."),
+		mcpapi.WithInputSchema[regListValuesArgs](),
+		mcpapi.WithReadOnlyHintAnnotation(true),
+		mcpapi.WithIdempotentHintAnnotation(true),
+	)
+
+	// Port forwarding & SOCKS tools
+	portfwdTool := mcpapi.NewTool(
+		portfwdToolName,
+		mcpapi.WithDescription("Start a port forward on a remote session or beacon. Traffic is tunneled through the Sliver C2 channel."),
+		mcpapi.WithInputSchema[portfwdArgs](),
+	)
+	socksStartTool := mcpapi.NewTool(
+		socksStartToolName,
+		mcpapi.WithDescription("Start a SOCKS5 proxy on a remote session or beacon. Returns a tunnel ID for proxying traffic."),
+		mcpapi.WithInputSchema[socksStartArgs](),
+	)
+	socksStopTool := mcpapi.NewTool(
+		socksStopToolName,
+		mcpapi.WithDescription("Stop a SOCKS5 proxy on a remote session or beacon by tunnel ID."),
+		mcpapi.WithInputSchema[socksStopArgs](),
+		mcpapi.WithDestructiveHintAnnotation(true),
+	)
+
+	// Windows services tools
+	servicesListTool := mcpapi.NewTool(
+		servicesListToolName,
+		mcpapi.WithDescription("List Windows services on a remote session or beacon."),
+		mcpapi.WithInputSchema[servicesListArgs](),
+		mcpapi.WithReadOnlyHintAnnotation(true),
+		mcpapi.WithIdempotentHintAnnotation(true),
+	)
+	serviceStartTool := mcpapi.NewTool(
+		serviceStartToolName,
+		mcpapi.WithDescription("Start a Windows service by name on a remote session or beacon."),
+		mcpapi.WithInputSchema[serviceStartArgs](),
+	)
+	serviceStopTool := mcpapi.NewTool(
+		serviceStopToolName,
+		mcpapi.WithDescription("Stop a Windows service by name on a remote session or beacon."),
+		mcpapi.WithInputSchema[serviceStopArgs](),
+		mcpapi.WithDestructiveHintAnnotation(true),
+	)
+	serviceRemoveTool := mcpapi.NewTool(
+		serviceRemoveToolName,
+		mcpapi.WithDescription("Remove (uninstall) a Windows service by name on a remote session or beacon."),
+		mcpapi.WithInputSchema[serviceRemoveArgs](),
+		mcpapi.WithDestructiveHintAnnotation(true),
+	)
+
+	// Implant generation & migration tools
+	generateTool := mcpapi.NewTool(
+		generateToolName,
+		mcpapi.WithDescription("Generate a new Sliver implant binary with the specified configuration. Returns base64-encoded binary."),
+		mcpapi.WithInputSchema[generateArgs](),
+	)
+	migrateTool := mcpapi.NewTool(
+		migrateToolName,
+		mcpapi.WithDescription("Migrate the current implant into a new process (by PID) on a remote session or beacon."),
+		mcpapi.WithInputSchema[migrateArgs](),
+	)
+
+	srv.server.AddTool(downloadTool, srv.downloadHandler)
+	srv.server.AddTool(injectShellcodeTool, srv.injectShellcodeHandler)
+	srv.server.AddTool(sideloadTool, srv.sideloadHandler)
+	srv.server.AddTool(executeAssemblyTool, srv.executeAssemblyHandler)
+	srv.server.AddTool(regReadTool, srv.regReadHandler)
+	srv.server.AddTool(regWriteTool, srv.regWriteHandler)
+	srv.server.AddTool(regCreateKeyTool, srv.regCreateKeyHandler)
+	srv.server.AddTool(regDeleteKeyTool, srv.regDeleteKeyHandler)
+	srv.server.AddTool(regListSubKeysTool, srv.regListSubKeysHandler)
+	srv.server.AddTool(regListValuesTool, srv.regListValuesHandler)
+	srv.server.AddTool(portfwdTool, srv.portfwdHandler)
+	srv.server.AddTool(socksStartTool, srv.socksStartHandler)
+	srv.server.AddTool(socksStopTool, srv.socksStopHandler)
+	srv.server.AddTool(servicesListTool, srv.servicesListHandler)
+	srv.server.AddTool(serviceStartTool, srv.serviceStartHandler)
+	srv.server.AddTool(serviceStopTool, srv.serviceStopHandler)
+	srv.server.AddTool(serviceRemoveTool, srv.serviceRemoveHandler)
+	srv.server.AddTool(generateTool, srv.generateHandler)
+	srv.server.AddTool(migrateTool, srv.migrateHandler)
+
+	// Apply safety middleware (already created above for hooks)
+	srv.safety = safety
+
+	// Register MCP resources for LLM context
+	srv.registerResources()
+
 	return srv
 }
 
