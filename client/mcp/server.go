@@ -387,7 +387,7 @@ func newServer(cfg Config, rpc rpcpb.SliverRPCClient, logger *log.Logger) *Slive
 		mcpapi.WithDestructiveHintAnnotation(true),
 	)
 
-	// Implant generation & migration tools
+	// Implant management tools
 	generateTool := mcpapi.NewTool(
 		generateToolName,
 		mcpapi.WithDescription("Generate a new Sliver implant binary with the specified configuration. Returns base64-encoded binary."),
@@ -397,6 +397,12 @@ func newServer(cfg Config, rpc rpcpb.SliverRPCClient, logger *log.Logger) *Slive
 		migrateToolName,
 		mcpapi.WithDescription("Migrate the current implant into a new process (by PID) on a remote session or beacon."),
 		mcpapi.WithInputSchema[migrateArgs](),
+	)
+	implantsListTool := mcpapi.NewTool(
+		implantsListToolName,
+		mcpapi.WithDescription("List all generated implant builds on the server. Returns implant names, configs, platforms, evasion flags, and staged status."),
+		mcpapi.WithInputSchema[implantsListArgs](),
+		mcpapi.WithReadOnlyHintAnnotation(true),
 	)
 
 	srv.server.AddTool(downloadTool, srv.downloadHandler)
@@ -418,6 +424,7 @@ func newServer(cfg Config, rpc rpcpb.SliverRPCClient, logger *log.Logger) *Slive
 	srv.server.AddTool(serviceRemoveTool, srv.serviceRemoveHandler)
 	srv.server.AddTool(generateTool, srv.generateHandler)
 	srv.server.AddTool(migrateTool, srv.migrateHandler)
+	srv.server.AddTool(implantsListTool, srv.implantsListHandler)
 
 	// Apply safety middleware (already created above for hooks)
 	srv.safety = safety
