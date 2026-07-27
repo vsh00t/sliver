@@ -2,8 +2,10 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"sync"
 	"time"
 
@@ -271,11 +273,34 @@ func (sm *SafetyMiddleware) recordAuditSimple(toolName string, message *mcpapi.C
 	sm.auditLog = append(sm.auditLog, entry)
 	sm.mu.Unlock()
 
+	// Write to JSONL audit file if configured
+	if sm.config != nil && sm.config.AuditLogPath != "" {
+		sm.writeAuditJSONL(entry)
+	}
+
 	status := "OK"
 	if result == nil {
 		status = "ERROR: nil result"
+		entry.Success = false
+	} else {
+		entry.Success = true
 	}
 	log.Printf("[AUDIT] %s | %s | session=%s | %s", entry.Timestamp.Format(time.RFC3339), toolName, entry.SessionID, status)
+}
+
+// writeAuditJSONL appends an audit entry as a JSON line to the audit file.
+func (sm *SafetyMiddleware) writeAuditJSONL(entry auditEntry) {
+	jsonBytes, err := json.Marshal(entry)
+	if err != nil {
+		return
+	}
+	jsonBytes = append(jsonBytes, '\n')
+	f, err := os.OpenFile(sm.config.AuditLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	f.Write(jsonBytes)
 }
 
 // GetAuditLog returns a copy of the audit log.

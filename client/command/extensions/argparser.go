@@ -86,6 +86,34 @@ func bofSetupAndParseFlags(args []string, ext *ExtCommand) (*flag.FlagSet,
 		}
 	}
 
+	// Check if args use flag-style (--name value) or positional style (value1 value2)
+	hasFlags := false
+	for _, a := range args {
+		if strings.HasPrefix(a, "--") || strings.HasPrefix(a, "-") {
+			hasFlags = true
+			break
+		}
+	}
+
+	// If args are positional, map them to flags based on manifest order
+	// e.g., ["672"] with manifest [{name:"pid"}] → ["--pid", "672"]
+	if !hasFlags && len(args) > 0 && len(ext.Arguments) > 0 {
+		flagArgs := make([]string, 0, len(args)*2)
+		argIdx := 0
+		for _, argDef := range ext.Arguments {
+			if argIdx >= len(args) {
+				break
+			}
+			// Skip "file" type positional args — they don't make sense positionally
+			if argDef.Type == "file" {
+				continue
+			}
+			flagArgs = append(flagArgs, "--"+argDef.Name, args[argIdx])
+			argIdx++
+		}
+		args = flagArgs
+	}
+
 	// Parse the arguments
 	if err := fs.Parse(args); err != nil {
 		return nil, nil, nil, nil, nil, nil, err

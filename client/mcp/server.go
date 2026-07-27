@@ -64,6 +64,7 @@ type SliverMCPServer struct {
 	server *mcpserver.MCPServer
 	logger *log.Logger
 	safety *SafetyMiddleware
+	toolHandlers map[string]toolHandlerFunc
 }
 
 func newServer(cfg Config, rpc rpcpb.SliverRPCClient, logger *log.Logger) *SliverMCPServer {
@@ -169,9 +170,10 @@ func newServer(cfg Config, rpc rpcpb.SliverRPCClient, logger *log.Logger) *Slive
 		mcpapi.WithDestructiveHintAnnotation(true),
 	)
 	srv := &SliverMCPServer{
-		Rpc:    rpc,
-		server: base,
-		logger: logger,
+		Rpc:          rpc,
+		server:       base,
+		logger:       logger,
+		toolHandlers: make(map[string]toolHandlerFunc),
 	}
 	srv.server.AddTool(listSessionsAndBeaconsTool, srv.listSessionsAndBeaconsHandler)
 	srv.server.AddTool(lsTool, srv.lsHandler)
@@ -425,6 +427,61 @@ func newServer(cfg Config, rpc rpcpb.SliverRPCClient, logger *log.Logger) *Slive
 	srv.server.AddTool(generateTool, srv.generateHandler)
 	srv.server.AddTool(migrateTool, srv.migrateHandler)
 	srv.server.AddTool(implantsListTool, srv.implantsListHandler)
+
+	// ── New tools: Network Discovery (FASE 2) ──
+	pingSweepTool := mcpapi.NewTool(
+		pingSweepToolName,
+		mcpapi.WithDescription("ICMP ping sweep of a CIDR network range to discover live hosts."),
+		mcpapi.WithInputSchema[pingSweepArgs](),
+		mcpapi.WithReadOnlyHintAnnotation(true),
+	)
+	portScanTool := mcpapi.NewTool(
+		portScanToolName,
+		mcpapi.WithDescription("TCP connect port scan from the implant to specified hosts and ports."),
+		mcpapi.WithInputSchema[portScanArgs](),
+		mcpapi.WithReadOnlyHintAnnotation(true),
+	)
+	arpScanTool := mcpapi.NewTool(
+		arpScanToolName,
+		mcpapi.WithDescription("Dump ARP table from the implant to discover L2 neighbors."),
+		mcpapi.WithInputSchema[arpScanArgs](),
+		mcpapi.WithReadOnlyHintAnnotation(true),
+	)
+	srv.server.AddTool(pingSweepTool, srv.pingSweepHandler)
+	srv.server.AddTool(portScanTool, srv.portScanHandler)
+	srv.server.AddTool(arpScanTool, srv.arpScanHandler)
+
+	// ── New tools: Credentials (FASE 3) ──
+	credListTool := mcpapi.NewTool(
+		credListToolName,
+		mcpapi.WithDescription("List all stored credentials in the Sliver server's credential database."),
+		mcpapi.WithInputSchema[credListArgs](),
+		mcpapi.WithReadOnlyHintAnnotation(true),
+	)
+	credAddTool := mcpapi.NewTool(
+		credAddToolName,
+		mcpapi.WithDescription("Add a credential to the Sliver server's credential database."),
+		mcpapi.WithInputSchema[credAddArgs](),
+	)
+	executeBOFTool := mcpapi.NewTool(
+		executeBOFToolName,
+		mcpapi.WithDescription("Execute a BOF (Beacon Object File) on the target. Pass args as flag-style tokens."),
+		mcpapi.WithInputSchema[executeBOFArgs](),
+	)
+	srv.server.AddTool(credListTool, srv.credListHandler)
+	srv.server.AddTool(credAddTool, srv.credAddHandler)
+	srv.server.AddTool(executeBOFTool, srv.executeBOFHandler)
+
+	// ── New tools: Batch Operations (FASE 5) ──
+	batchTool := mcpapi.NewTool(
+		batchToolName,
+		mcpapi.WithDescription("Execute multiple MCP tool calls in parallel (max 20). Each call: {tool, args}."),
+		mcpapi.WithInputSchema[batchArgs](),
+	)
+	srv.server.AddTool(batchTool, srv.batchHandler)
+
+	// ── Register all handlers in internal map for batch dispatch ──
+	srv.registerInternalHandlers()
 
 	// Apply safety middleware (already created above for hooks)
 	srv.safety = safety
