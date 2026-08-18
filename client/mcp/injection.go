@@ -383,6 +383,8 @@ func (s *SliverMCPServer) handleExecuteAssembly(ctx context.Context, args execut
 		PPid:        args.PPid,
 		ProcessArgs: args.ProcessArgs,
 		InProcess:   args.InProcess,
+		AmsiBypass:  args.AmsiBypass,
+		EtwBypass:   args.EtwBypass,
 	})
 	if err != nil {
 		return mcpapi.NewToolResultErrorFromErr("failed to execute assembly", err), nil

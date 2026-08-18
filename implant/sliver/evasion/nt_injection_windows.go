@@ -123,9 +123,15 @@ func NtAllocateVirtualMemoryRemote(processHandle windows.Handle, size uintptr, p
 		base       uintptr // NULL → kernel picks the base
 		regionSize = size
 	)
+	// NtAllocateVirtualMemory(ProcessHandle, BaseAddress*, ZeroBits,
+	//                         RegionSize*, AllocationType, Protect)
+	// ZeroBits MUST be present (0) — omitting it shifts RegionSize*/Type/Protect
+	// one slot left and the kernel dereferences AllocationType (0x3000) as a
+	// RegionSize pointer → NTSTATUS 0xC0000005.
 	err := ntCall("NtAllocateVirtualMemory",
 		uintptr(processHandle),
 		uintptr(unsafe.Pointer(&base)),
+		0, // ZeroBits
 		uintptr(unsafe.Pointer(&regionSize)),
 		uintptr(memCommit|memReserve),
 		uintptr(protection),

