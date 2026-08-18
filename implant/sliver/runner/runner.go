@@ -44,7 +44,10 @@ import (
 	"github.com/bishopfox/sliver/implant/sliver/transports"
 	"github.com/bishopfox/sliver/implant/sliver/version"
 	"github.com/bishopfox/sliver/protobuf/sliverpb"
-	// {{if .Config.Evasion}}
+	// {{if and .Config.Evasion .Config.IsBeacon}}
+	// evasion is only referenced from the beacon sleep path (SleepMask in
+	// beaconStartup). Session-mode builds must not import it or the codegen
+	// renders an unused import and the implant build fails.
 	"github.com/bishopfox/sliver/implant/sliver/evasion"
 	// {{end}}
 

