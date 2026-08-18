@@ -114,7 +114,6 @@ func resolveExportByHash(dllBase uintptr, targetHash uint64) (uintptr, error) {
 
 	// COFF header
 	coffOffset := dllBase + peOffset + 4
-	sizeOfOptionalHeader := *(*uint16)(unsafe.Pointer(coffOffset + 16))
 
 	// Optional header starts right after COFF header (20 bytes)
 	optOffset := coffOffset + 20

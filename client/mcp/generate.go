@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"os"
 
 	"github.com/bishopfox/sliver/protobuf/clientpb"
 	mcpapi "github.com/mark3labs/mcp-go/mcp"
@@ -71,13 +72,19 @@ type generateArgs struct {
 	ReconnectInterval   int64  `json:"reconnect_interval,omitempty"`
 	MaxConnectionErrors uint32 `json:"max_connection_errors,omitempty"`
 	ConnectionStrategy  string `json:"connection_strategy,omitempty"` // "random" or "sequential"
+
+	// Detection gate: auto-scan the generated binary against cached YARA rules
+	// (elastic/protections-artifacts) before delivery. Skipped when the yara
+	// binary or the ruleset is unavailable — see result notes.
+	SkipYaraScan bool `json:"skip_yara_scan,omitempty"`
 }
 
 type generateResult struct {
-	ImplantName    string `json:"implant_name"`
-	ImplantBuildID string `json:"implant_build_id"`
-	BinaryBase64   string `json:"binary_base64"`
-	BinarySize     int    `json:"binary_size"`
+	ImplantName    string          `json:"implant_name"`
+	ImplantBuildID string          `json:"implant_build_id"`
+	BinaryBase64   string          `json:"binary_base64"`
+	BinarySize     int             `json:"binary_size"`
+	YaraScan       *yaraScanResult `json:"yara_scan,omitempty"`
 }
 
 func (s *SliverMCPServer) generateHandler(ctx context.Context, request mcpapi.CallToolRequest) (*mcpapi.CallToolResult, error) {
@@ -171,12 +178,47 @@ func (s *SliverMCPServer) generateHandler(ctx context.Context, request mcpapi.Ca
 		return mcpapi.NewToolResultError("generation succeeded but no binary returned"), nil
 	}
 
-	return mcpapi.NewToolResultStructuredOnly(generateResult{
+	// Detection gate: scan the fresh binary against cached YARA rules before
+	// handing it to the operator. Never blocks delivery — tooling gaps are
+	// reported as notes.
+	result := generateResult{
 		ImplantName:    genResp.ImplantName,
 		ImplantBuildID: genResp.ImplantBuildID,
 		BinaryBase64:   base64.StdEncoding.EncodeToString(genResp.File.Data),
 		BinarySize:     len(genResp.File.Data),
-	}), nil
+	}
+	if !args.SkipYaraScan {
+		if scanRes := scanGeneratedBinary(genResp.File.Data); scanRes != nil {
+			result.YaraScan = scanRes
+		}
+	}
+
+	return mcpapi.NewToolResultStructuredOnly(result), nil
+}
+
+// scanGeneratedBinary writes data to a temp file, YARA-scans it against the
+// default ruleset, and removes the temp file. Returns nil when scanning is
+// entirely unavailable (no yara binary AND no cached rules).
+func scanGeneratedBinary(data []byte) *yaraScanResult {
+	tmpFile, err := os.CreateTemp("", "sliver-implant-*.bin")
+	if err != nil {
+		return nil
+	}
+	tmpPath := tmpFile.Name()
+	defer os.Remove(tmpPath)
+	if _, err := tmpFile.Write(data); err != nil {
+		tmpFile.Close()
+		return nil
+	}
+	tmpFile.Close()
+
+	res, err := YaraScanFile(tmpPath, elasticRulesDir, false)
+	if err != nil {
+		return nil
+	}
+	// Redact the temp path — operators see the implant name, not server paths
+	res.File = "<generated implant>"
+	return res
 }
 
 // --- Migrate ---

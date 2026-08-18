@@ -93,7 +93,7 @@ var rpcGhostStub = []byte{
 	// +0x10: jae +0x06 → jumps to +0x12+0x06 = +0x18 (call_original)
 	0x73, 0x06,
 	// +0x12: mov eax, RPC_S_SERVER_UNAVAILABLE
-	0xB8, byte(rpcServerUnavailable), byte(rpcServerUnavailable >> 8), 0x00, 0x00,
+	0xB8, byte(rpcServerUnavailable & 0xff), byte((rpcServerUnavailable >> 8) & 0xff), 0x00, 0x00,
 	// +0x17: ret
 	0xC3,
 	// +0x18: call_original: jmp [rip+0x10] → reads trampoline at rip+0x1E+0x10 = +0x2E
